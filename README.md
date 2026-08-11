@@ -2,6 +2,11 @@
 
 이지메이커 보드가 USB 시리얼로 보내는 초음파 거리 값을 전용 데이터 분석 사이트 없이 브라우저에서 직접 확인하고 CSV로 저장하는 정적 웹앱입니다.
 
+## 배포 주소
+
+- 서비스: https://ezmaker-ultrasonic-sensor.vercel.app
+- GitHub: https://github.com/chlgytjr111-pixel/Quokka3
+
 ## 사용 조건
 
 - HTTPS로 열린 배포 주소
@@ -66,4 +71,3 @@ Web Serial은 보안 컨텍스트에서만 동작하므로 실사용 테스트�
 - 외부 분석 도구, 광고 스크립트, 원격 라이브러리를 사용하지 않습니다.
 - 엄격한 Content Security Policy와 `serial=(self)` 권한 정책을 적용합니다.
 - CSV로 내려받은 원시 문자열은 스프레드시트 수식 주입을 방지하도록 처리합니다.
-
