@@ -1,0 +1,220 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="이지메이커 초음파 센서의 USB 시리얼 데이터를 브라우저에서 직접 측정하고 저장하는 대시보드">
+  <meta name="theme-color" content="#243b8f">
+  <title>이지메이커 초음파 센서 대시보드</title>
+  <link rel="stylesheet" href="/styles.css?v=20260812">
+  <script src="/app.js?v=20260812" defer></script>
+</head>
+<body>
+  <noscript>
+    <div class="noscript">이 페이지는 센서 데이터를 읽기 위해 JavaScript가 필요합니다.</div>
+  </noscript>
+
+  <div class="app-shell">
+    <header class="hero">
+      <div>
+        <p class="hero__eyebrow">EZMAKER LAB</p>
+        <h1>초음파 센서 실험 대시보드</h1>
+        <p class="hero__subtitle">전용 사이트 없이 USB Serial 데이터를 브라우저에서 바로 확인하세요.</p>
+      </div>
+      <div class="status-pill" aria-live="polite">
+        <span id="statusDot" class="status-dot" aria-hidden="true"></span>
+        <span id="serialStatus">장치 연결 전</span>
+      </div>
+    </header>
+
+    <section class="toolbar" aria-label="센서 제어">
+      <button class="button button--primary" id="connectBtn" type="button">장치 연결</button>
+      <button class="button" id="disconnectBtn" type="button" disabled>연결 해제</button>
+      <span class="toolbar__divider" aria-hidden="true"></span>
+      <button class="button button--success" id="startBtn" type="button">기록 시작</button>
+      <button class="button button--danger" id="stopBtn" type="button" disabled>기록 중지</button>
+      <button class="button" id="clearBtn" type="button">데이터 지우기</button>
+      <div class="toolbar__spacer"></div>
+      <span class="baud-badge">115200 baud</span>
+      <label class="interval-control" for="recordInterval">
+        최소 기록 간격
+        <span>
+          <input id="recordInterval" type="number" value="100" min="20" max="60000" step="10" inputmode="numeric">
+          ms
+        </span>
+      </label>
+    </section>
+
+    <section id="environmentNotice" class="environment-notice" aria-live="polite">
+      <span class="environment-notice__icon" aria-hidden="true"></span>
+      <div>
+        <strong id="environmentTitle">연결 환경 확인 중</strong>
+        <p id="environmentText">브라우저의 Web Serial 지원 여부를 확인하고 있습니다.</p>
+      </div>
+    </section>
+
+    <main class="dashboard">
+      <section class="card card--experiment" aria-labelledby="experimentTitle">
+        <div class="card__header">
+          <div>
+            <p class="eyebrow">EXPERIMENT 01</p>
+            <h2 id="experimentTitle">센서와 물체 사이의 거리</h2>
+          </div>
+          <span class="badge">입력 단위 cm</span>
+        </div>
+
+        <div class="metric" aria-live="polite">
+          <span id="distanceValue">--</span>
+          <small>cm</small>
+        </div>
+        <p id="distanceRawText" class="muted">원시 데이터 대기 중</p>
+
+        <div class="distance-visual">
+          <svg viewBox="0 0 760 330" role="img" aria-labelledby="distanceSvgTitle distanceSvgDesc">
+            <title id="distanceSvgTitle">초음파 센서 거리 시각화</title>
+            <desc id="distanceSvgDesc">센서와 물체 사이의 현재 거리를 선과 숫자로 표시합니다.</desc>
+            <defs>
+              <linearGradient id="wallGradient" x1="0" x2="1">
+                <stop offset="0%" stop-color="#c1ccda"></stop>
+                <stop offset="100%" stop-color="#8b99ab"></stop>
+              </linearGradient>
+            </defs>
+            <rect x="28" y="245" width="704" height="10" rx="5" fill="#d8dee7"></rect>
+            <g>
+              <rect x="55" y="128" width="70" height="80" rx="12" fill="#3150a0"></rect>
+              <circle cx="75" cy="158" r="13" fill="#e2e8f4" stroke="#172033" stroke-width="3"></circle>
+              <circle cx="105" cy="158" r="13" fill="#e2e8f4" stroke="#172033" stroke-width="3"></circle>
+              <rect x="76" y="208" width="28" height="37" rx="4" fill="#6b7788"></rect>
+              <text x="90" y="113" text-anchor="middle" font-size="15" font-weight="800" fill="#172033">초음파 센서</text>
+            </g>
+            <line id="distanceLine" x1="125" y1="158" x2="390" y2="158" stroke="#4967d8" stroke-width="3" stroke-dasharray="8 7"></line>
+            <path d="M145 140 Q165 158 145 176" fill="none" stroke="#7c92e7" stroke-width="3"></path>
+            <path d="M160 132 Q190 158 160 184" fill="none" stroke="#9aabea" stroke-width="3"></path>
+            <g id="wallGroup" transform="translate(390,0)">
+              <rect x="0" y="55" width="34" height="190" rx="5" fill="url(#wallGradient)" stroke="#657286"></rect>
+              <path d="M0 80H34 M0 115H34 M0 150H34 M0 185H34 M0 220H34" stroke="#eef2f7" stroke-width="2"></path>
+              <text x="17" y="40" text-anchor="middle" font-size="16" font-weight="900" fill="#172033">물체</text>
+            </g>
+            <text id="distanceLabel" x="257" y="140" text-anchor="middle" font-size="18" font-weight="900" fill="#3457d5">-- cm</text>
+            <line x1="125" y1="282" x2="660" y2="282" stroke="#acb7c7" stroke-width="2"></line>
+            <line x1="125" y1="275" x2="125" y2="289" stroke="#8e9bad" stroke-width="2"></line>
+            <line x1="660" y1="275" x2="660" y2="289" stroke="#8e9bad" stroke-width="2"></line>
+            <text x="125" y="310" text-anchor="middle" font-size="12" fill="#667085">0</text>
+            <text id="distanceScaleMaxLabel" x="660" y="310" text-anchor="middle" font-size="12" fill="#667085">200 cm</text>
+          </svg>
+        </div>
+
+        <div class="controls-grid">
+          <div class="control-box">
+            <span class="control-box__label">센서 입력</span>
+            <strong>한 줄의 숫자 값</strong>
+          </div>
+          <label class="control-box" for="distanceMax">
+            <span class="control-box__label">화면 최대 거리 (cm)</span>
+            <input id="distanceMax" type="number" value="200" min="10" max="10000" step="10" inputmode="decimal">
+          </label>
+          <div class="control-box">
+            <span class="control-box__label">기록 상태</span>
+            <strong id="measurementState">대기 중</strong>
+          </div>
+        </div>
+
+        <div id="demoPanel" class="demo-panel">
+          <div>
+            <strong>센서 없이 화면 테스트</strong>
+            <p>장치가 연결되지 않았을 때만 데모 값을 기록할 수 있습니다.</p>
+          </div>
+          <label for="distanceDemo" class="demo-slider">
+            <input id="distanceDemo" type="range" min="5" max="200" value="100">
+            <span id="distanceDemoLabel">100 cm</span>
+          </label>
+        </div>
+      </section>
+
+      <div class="dashboard__side">
+        <section class="card" aria-labelledby="graphTitle">
+          <div class="card__header">
+            <div>
+              <p class="eyebrow">LIVE GRAPH</p>
+              <h2 id="graphTitle">거리-시간 그래프</h2>
+            </div>
+            <button class="button button--compact" id="downloadBtn" type="button" disabled>CSV 저장</button>
+          </div>
+          <canvas id="distanceChart" role="img" aria-label="시간에 따른 거리 측정 그래프"></canvas>
+          <p class="chart-caption">기록 시작 후 들어온 값만 그래프와 CSV에 저장됩니다.</p>
+        </section>
+
+        <section class="card" aria-labelledby="tableTitle">
+          <div class="card__header">
+            <div>
+              <p class="eyebrow">DATA TABLE</p>
+              <h2 id="tableTitle">최근 측정값</h2>
+            </div>
+            <span id="distanceCount" class="badge">0개</span>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <caption class="visually-hidden">최근 초음파 센서 거리 측정값</caption>
+              <thead>
+                <tr>
+                  <th scope="col">시간 (s)</th>
+                  <th scope="col">거리 (cm)</th>
+                  <th scope="col">원시값</th>
+                </tr>
+              </thead>
+              <tbody id="distanceTable">
+                <tr class="empty-row"><td colspan="3">아직 기록된 값이 없습니다.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+      </div>
+    </main>
+
+    <section class="quick-guide" aria-labelledby="guideTitle">
+      <div>
+        <p class="eyebrow">QUICK START</p>
+        <h2 id="guideTitle">연결 순서</h2>
+      </div>
+      <ol>
+        <li><span>1</span><p><strong>측정 펌웨어 확인하기</strong>보드가 초음파 값을 115200 baud 텍스트로 출력하도록 스케치가 먼저 업로드되어 있어야 합니다.</p></li>
+        <li><span>2</span><p><strong>다른 연결을 닫고 장치 연결</strong>전용 사이트와 시리얼 모니터를 닫은 뒤 Chrome/Edge에서 USB 장치를 선택합니다.</p></li>
+        <li><span>3</span><p><strong>기록 시작 누르기</strong>값을 확인한 뒤 CSV로 내려받습니다. 모든 데이터는 이 브라우저 안에서만 처리됩니다.</p></li>
+      </ol>
+    </section>
+
+    <details class="advanced-card">
+      <summary>원시 데이터 / 파서 설정</summary>
+      <div class="advanced-grid">
+        <label class="control-box" for="numberIndex">
+          <span class="control-box__label">사용할 숫자 순번</span>
+          <input id="numberIndex" type="number" value="1" min="1" max="100" step="1" inputmode="numeric">
+        </label>
+        <label class="control-box" for="parserScale">
+          <span class="control-box__label">배율 (scale)</span>
+          <input id="parserScale" type="number" value="1" step="0.001" inputmode="decimal">
+        </label>
+        <label class="control-box" for="parserOffset">
+          <span class="control-box__label">보정값 (offset)</span>
+          <input id="parserOffset" type="number" value="0" step="0.001" inputmode="decimal">
+        </label>
+      </div>
+      <div class="parser-hint">
+        센서가 보내는 줄바꿈 단위 텍스트에서 숫자를 읽습니다. 기본값은 첫 번째 숫자를 cm로 사용합니다.
+        값이 다르면 숫자 순번·배율·보정값을 조정하세요.
+      </div>
+      <div class="raw-header">
+        <strong>수신 로그</strong>
+        <button id="clearLogBtn" class="text-button" type="button">로그 지우기</button>
+      </div>
+      <pre id="rawLog" class="raw-log">아직 수신 데이터가 없습니다.</pre>
+    </details>
+
+    <footer>
+      <p>이 페이지는 장치 데이터를 외부 서버로 전송하지 않습니다. USB 연결 권한은 브라우저가 직접 관리합니다.</p>
+    </footer>
+  </div>
+
+  <div id="toast" class="toast" role="alert" hidden></div>
+</body>
+</html>
