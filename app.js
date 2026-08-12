@@ -514,7 +514,71 @@ function updateDistance(distance, raw = '', fromSerial = false) {
   renderDistanceTable();
   drawDistanceChart();
   updateControls();
-}Îœ-¢Gß≤⁄Óù∆≠y”ureTable();
+}
+
+function refreshDistanceVisual() {
+  if (currentDistance === null) {
+    return;
+  }
+
+  const maximum = Math.max(20, Math.min(10000, numberOr(elements.distanceMax.value, 200)));
+  elements.distanceMax.value = String(maximum);
+  const shown = Math.max(5, Math.min(maximum, currentDistance));
+  const startX = 150;
+  const endX = 585;
+  const wallX = startX + ((shown - 5) / (maximum - 5)) * (endX - startX);
+
+  elements.wallGroup.setAttribute('transform', `translate(${wallX},0)`);
+  elements.distanceLine.setAttribute('x2', String(wallX));
+  elements.beam.setAttribute('points', `150,105 ${wallX},75 ${wallX},215 150,175`);
+  elements.distanceVisualLabel.textContent = `${formatNumber(currentDistance, 1)} cm`;
+}
+
+function updateDistanceDemo() {
+  const value = numberOr(elements.distanceDemo.value, 100);
+  elements.distanceDemoLabel.textContent = `${formatNumber(value, 0)} cm`;
+  if (!receivingSensor) {
+    updateDistance(value, 'DEMO', false);
+  }
+}
+
+function getBaselineVolume() {
+  const volume = Math.max(1, Math.min(60, numberOr(elements.v0Input.value, 30)));
+  elements.v0Input.value = String(volume);
+  return volume;
+}
+
+function calculateVolume(pressure) {
+  if (!Number.isFinite(pressure) || pressure <= 0) {
+    return null;
+  }
+  return (getBaselineVolume() * pressureBaseline) / pressure;
+}
+
+function updatePressure(pressure, raw = '', fromSerial = false) {
+  if (!Number.isFinite(pressure) || pressure <= 0) {
+    return;
+  }
+
+  currentPressure = pressure;
+  currentPressureSource = fromSerial ? 'serial' : 'demo';
+  elements.pressureValue.textContent = formatNumber(pressure, 3);
+  elements.pressureRaw.textContent = fromSerial ? `ÏõêÏãúÍ∞í: ${shorten(raw, 120)}` : 'ÌôîÎ©¥ ÌÖåÏä§Ìä∏ Í∞í';
+  refreshPressureVisual();
+
+  if (!fromSerial || !canRecord('pressure')) {
+    return;
+  }
+
+  sensors.pressure.data.push({
+    timestamp: Date.now(),
+    elapsedSeconds: elapsedSeconds('pressure'),
+    pressure,
+    volume: calculateVolume(pressure),
+    raw: String(raw).slice(0, MAX_FRAME_LENGTH)
+  });
+  trimData(sensors.pressure.data);
+  renderPressureTable();
   drawPressureChart();
   updateControls();
 }
