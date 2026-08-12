@@ -3,46 +3,73 @@
 const BAUD_RATE = 115200;
 const MAX_DATA_POINTS = 10000;
 const MAX_FRAME_LENGTH = 4096;
-const RAW_PREVIEW_BYTES = 64;
-const RAW_LOG_LINES = 180;
-const IDLE_FRAME_DELAY_MS = 350;
+const RAW_LOG_LINES = 220;
 const EMPTY_LOG_MESSAGE = '아직 수신 데이터가 없습니다.';
+const IDLE_FRAME_DELAY_MS = 350;
 
 const $ = (id) => document.getElementById(id);
 
 const elements = {
-  connectBtn: $('connectBtn'),
-  disconnectBtn: $('disconnectBtn'),
-  startBtn: $('startBtn'),
-  stopBtn: $('stopBtn'),
-  clearBtn: $('clearBtn'),
-  clearLogBtn: $('clearLogBtn'),
-  downloadBtn: $('downloadBtn'),
+  btnConnect: $('btnConnect'),
+  btnDisconnect: $('btnDisconnect'),
+  btnStart: $('btnStart'),
+  btnStop: $('btnStop'),
+  btnClear: $('btnClear'),
+  btnCsv: $('btnCsv'),
+  btnBaseline: $('btnBaseline'),
+  btnClearLog: $('btnClearLog'),
   statusDot: $('statusDot'),
-  serialStatus: $('serialStatus'),
+  statusText: $('statusText'),
+  sourceBadge: $('sourceBadge'),
+  recordInterval: $('recordInterval'),
   environmentNotice: $('environmentNotice'),
   environmentTitle: $('environmentTitle'),
   environmentText: $('environmentText'),
-  recordInterval: $('recordInterval'),
+  distancePanel: $('distancePanel'),
+  pressurePanel: $('pressurePanel'),
   distanceValue: $('distanceValue'),
-  distanceRawText: $('distanceRawText'),
-  measurementState: $('measurementState'),
+  distanceRaw: $('distanceRaw'),
   distanceMax: $('distanceMax'),
-  wallGroup: $('wallGroup'),
-  distanceLine: $('distanceLine'),
-  distanceLabel: $('distanceLabel'),
-  distanceScaleMaxLabel: $('distanceScaleMaxLabel'),
-  demoPanel: $('demoPanel'),
   distanceDemo: $('distanceDemo'),
   distanceDemoLabel: $('distanceDemoLabel'),
+  wallGroup: $('wallGroup'),
+  beam: $('beam'),
+  distanceLine: $('distanceLine'),
+  distanceVisualLabel: $('distanceVisualLabel'),
+  distanceChart: $('distanceChart'),
   distanceTable: $('distanceTable'),
   distanceCount: $('distanceCount'),
-  distanceChart: $('distanceChart'),
-  numberIndex: $('numberIndex'),
-  parserScale: $('parserScale'),
-  parserOffset: $('parserOffset'),
+  pressureValue: $('pressureValue'),
+  pressureRaw: $('pressureRaw'),
+  v0Input: $('v0Input'),
+  baselineText: $('baselineText'),
+  pressureDemo: $('pressureDemo'),
+  pressureDemoLabel: $('pressureDemoLabel'),
+  pistonGroup: $('pistonGroup'),
+  airFill: $('airFill'),
+  syringeVolumeLabel: $('syringeVolumeLabel'),
+  pressureChart: $('pressureChart'),
+  pressureTable: $('pressureTable'),
+  pressureCount: $('pressureCount'),
   rawLog: $('rawLog'),
   toast: $('toast')
+};
+
+const sensors = {
+  distance: {
+    name: '초음파',
+    data: [],
+    elapsedOffsetSeconds: 0,
+    sessionStartedAt: 0,
+    lastRecordedAt: Number.NEGATIVE_INFINITY
+  },
+  pressure: {
+    name: '공기압',
+    data: [],
+    elapsedOffsetSeconds: 0,
+    sessionStartedAt: 0,
+    lastRecordedAt: Number.NEGATIVE_INFINITY
+  }
 };
 
 let port = null;
@@ -51,20 +78,19 @@ let readLoopPromise = null;
 let keepReading = false;
 let isDisconnecting = false;
 let decoder = new TextDecoder();
-let serialBuffer = '';
+let lineBuffer = '';
 let idleFrameTimer = null;
 
-let isMeasuring = false;
-let measurementStartedAt = 0;
-let elapsedOffsetSeconds = 0;
-let lastRecordedAt = Number.NEGATIVE_INFINITY;
-let currentDistanceCm = null;
+let activeTab = 'distance';
+let receivingSensor = null;
+let currentDistance = null;
+let currentPressure = null;
+let currentPressureSource = null;
+let pressureBaseline = 1;
 
 let rawLines = [];
 let rawRenderScheduled = false;
 let toastTimer = null;
-
-const data = [];
 
 function hasSerialSupport() {
   return window.isSecureContext && 'serial' in navigator;
@@ -77,7 +103,7 @@ function updateEnvironmentNotice() {
     elements.environmentNotice.classList.add('is-warning');
     elements.environmentTitle.textContent = 'HTTPS 연결이 필요합니다';
     elements.environmentText.textContent = 'Vercel 배포 주소처럼 HTTPS로 열린 페이지에서 다시 시도하세요.';
-    elements.connectBtn.disabled = true;
+    updateControls();
     return;
   }
 
@@ -85,32 +111,44 @@ function updateEnvironmentNotice() {
     elements.environmentNotice.classList.add('is-warning');
     elements.environmentTitle.textContent = '이 브라우저는 Web Serial을 지원하지 않습니다';
     elements.environmentText.textContent = 'Windows, macOS 또는 ChromeOS의 최신 데스크톱 Chrome/Edge에서 직접 주소를 여세요.';
-    elements.connectBtn.disabled = true;
+    updateControls();
     return;
   }
 
   elements.environmentNotice.classList.add('is-success');
   elements.environmentTitle.textContent = '센서 연결 준비 완료';
-  elements.environmentText.textContent = '장치 연결을 누르면 브라우저가 USB 시리얼 포트 선택 창을 엽니다.';
-  elements.connectBtn.disabled = Boolean(port);
+  elements.environmentText.textContent = '보드 코드와 같은 센서 탭을 선택한 뒤 장치 연결과 기록 시작을 순서대로 누르세요.';
+  updateControls();
 }
 
-function setConnectionStatus(state, message) {
+function setStatus(state, text) {
   elements.statusDot.classList.toggle('is-connected', state === 'connected');
   elements.statusDot.classList.toggle('is-error', state === 'error');
-  elements.serialStatus.textContent = message;
+  elements.statusText.textContent = text;
 }
 
-function setConnectionControls(connected) {
-  elements.connectBtn.disabled = connected || !hasSerialSupport();
-  elements.disconnectBtn.disabled = !connected;
-  elements.distanceDemo.disabled = connected;
-  elements.demoPanel.classList.toggle('is-disabled', connected);
+function updateControls() {
+  const connected = Boolean(port);
+  const running = Boolean(receivingSensor);
+  const activeHasData = sensors[activeTab].data.length > 0;
+
+  elements.btnConnect.disabled = connected || !hasSerialSupport() || isDisconnecting;
+  elements.btnDisconnect.disabled = !connected || isDisconnecting;
+  elements.btnStart.disabled = !connected || running || isDisconnecting;
+  elements.btnStop.disabled = !connected || !running || isDisconnecting;
+  elements.btnCsv.disabled = !activeHasData;
+  elements.btnStart.textContent = `${sensors[activeTab].name} 기록 시작`;
+  elements.btnStop.textContent = '기록 중지';
+  elements.distanceDemo.disabled = running;
+  elements.pressureDemo.disabled = running;
+  document.querySelectorAll('.demo-panel').forEach((panel) => {
+    panel.classList.toggle('is-disabled', running);
+  });
 }
 
-function resetSerialSession() {
+function resetSerialDecoder() {
   decoder = new TextDecoder();
-  serialBuffer = '';
+  lineBuffer = '';
   clearTimeout(idleFrameTimer);
   idleFrameTimer = null;
 }
@@ -130,23 +168,32 @@ async function connectSerial() {
 
   try {
     selectedPort = await navigator.serial.requestPort();
-    await selectedPort.open({ baudRate: BAUD_RATE });
+    await selectedPort.open({
+      baudRate: BAUD_RATE,
+      dataBits: 8,
+      stopBits: 1,
+      parity: 'none',
+      flowControl: 'none'
+    });
 
     port = selectedPort;
     keepReading = true;
-    resetSerialSession();
-    resetLiveReading();
-    setConnectionControls(true);
-    setConnectionStatus('connected', `${BAUD_RATE} baud 연결됨`);
+    resetSerialDecoder();
+    currentPressure = null;
+    currentPressureSource = null;
+    elements.pressureValue.textContent = '--';
+    elements.pressureRaw.textContent = '센서 데이터 대기 중';
+    refreshPressureVisual();
+    setStatus('connected', `연결됨 (${BAUD_RATE} bps)`);
+    updateControls();
 
     const info = typeof port.getInfo === 'function' ? port.getInfo() : {};
     const identity = [
       Number.isInteger(info.usbVendorId) ? `VID ${toHex(info.usbVendorId)}` : '',
       Number.isInteger(info.usbProductId) ? `PID ${toHex(info.usbProductId)}` : ''
     ].filter(Boolean).join(' · ');
-
-    appendRaw(`--- SERIAL CONNECTED @ ${BAUD_RATE}${identity ? ` · ${identity}` : ''} ---`);
-    showToast('장치가 연결되었습니다. 값을 확인한 뒤 기록 시작을 누르세요.', 'success');
+    appendLog(`▶ 장치에 연결되었습니다.${identity ? ` (${identity})` : ''}`);
+    showToast('장치가 연결되었습니다. 센서 탭을 확인한 뒤 기록 시작을 누르세요.', 'success');
 
     const activePort = port;
     readLoopPromise = readLoop(activePort);
@@ -158,7 +205,7 @@ async function connectSerial() {
       },
       (error) => {
         if (keepReading && port === activePort) {
-          void handleUnexpectedDisconnect(`읽기 오류: ${errorMessage(error)}`);
+          void handleUnexpectedDisconnect(`수신 오류: ${errorMessage(error)}`);
         }
       }
     );
@@ -167,19 +214,20 @@ async function connectSerial() {
       try {
         await selectedPort.close();
       } catch (_) {
-        // The port may never have opened.
+        // The port may not have opened.
       }
     }
 
     if (error && error.name === 'NotFoundError') {
-      setConnectionStatus('idle', '장치 연결 전');
+      setStatus('idle', '장치 연결 전');
       showToast('장치 선택이 취소되었습니다.');
       return;
     }
 
-    setConnectionStatus('error', '연결 실패');
-    appendRaw(`CONNECT ERROR: ${errorMessage(error)}`);
+    setStatus('error', '연결 실패');
+    appendLog(`⚠ 연결 실패: ${errorMessage(error)}`);
     showToast(`연결 실패: ${friendlyConnectionError(error)}`, 'error');
+    updateControls();
   }
 }
 
@@ -201,7 +249,7 @@ async function readLoop(activePort) {
       try {
         reader.releaseLock();
       } catch (_) {
-        // The lock can already be released after a hardware disconnect.
+        // The lock may already be released after physical removal.
       }
       reader = null;
     }
@@ -209,90 +257,115 @@ async function readLoop(activePort) {
 }
 
 function handleBytes(bytes) {
-  const preview = Array.from(bytes.slice(0, RAW_PREVIEW_BYTES))
-    .map((byte) => byte.toString(16).padStart(2, '0').toUpperCase())
-    .join(' ');
-  const truncated = bytes.byteLength > RAW_PREVIEW_BYTES
-    ? ` … (+${bytes.byteLength - RAW_PREVIEW_BYTES} bytes)`
-    : '';
-  const text = decoder.decode(bytes, { stream: true });
-  const readableText = text
-    ? `\nTXT ${text.replace(/\r/g, '\\r').replace(/\n/g, '\\n').slice(0, 500)}`
-    : '';
+  lineBuffer += decoder.decode(bytes, { stream: true });
 
-  appendRaw(`HEX ${preview}${truncated}${readableText}`);
-  serialBuffer += text;
+  const lines = lineBuffer.split(/\r\n|\n|\r/);
+  lineBuffer = lines.pop() || '';
 
-  if (serialBuffer.length > MAX_FRAME_LENGTH) {
-    appendRaw(`FRAME DROPPED: ${MAX_FRAME_LENGTH}자를 초과했습니다.`);
-    serialBuffer = '';
-    clearTimeout(idleFrameTimer);
-    return;
-  }
-
-  const frames = serialBuffer.split(/\r\n|\n|\r/);
-  serialBuffer = frames.pop() || '';
-
-  for (const frame of frames) {
-    const trimmed = frame.trim();
-    if (trimmed) {
-      handleFrame(trimmed);
+  for (const line of lines) {
+    const frame = line.trim();
+    if (frame.length > MAX_FRAME_LENGTH) {
+      appendLog(`⚠ 프레임이 ${MAX_FRAME_LENGTH}자를 초과해 버렸습니다.`);
+    } else if (frame) {
+      processFrame(frame);
     }
   }
 
+  if (lineBuffer.length > MAX_FRAME_LENGTH) {
+    appendLog(`⚠ 미완성 프레임이 ${MAX_FRAME_LENGTH}자를 초과해 버렸습니다.`);
+    lineBuffer = '';
+  }
+
   clearTimeout(idleFrameTimer);
-  if (serialBuffer.trim()) {
+  if (lineBuffer.trim()) {
     idleFrameTimer = setTimeout(flushIdleFrame, IDLE_FRAME_DELAY_MS);
   }
 }
 
 function flushIdleFrame() {
-  const frame = serialBuffer.trim();
-  serialBuffer = '';
+  const frame = lineBuffer.trim();
+  lineBuffer = '';
   idleFrameTimer = null;
   if (frame) {
-    appendRaw('NOTICE: 줄바꿈 없이 멈춘 데이터를 한 프레임으로 처리했습니다.');
-    handleFrame(frame);
+    appendLog('⚠ 줄바꿈 없이 멈춘 데이터를 한 프레임으로 처리했습니다.');
+    processFrame(frame);
   }
 }
 
-function handleFrame(frame) {
-  const value = extractNumber(frame);
-  if (value === null) {
+function processFrame(frame) {
+  appendLog(`RX ${shorten(frame, 1000)}`);
+  if (!receivingSensor) {
     return;
   }
 
-  if (value < 0 || value > 100000) {
-    appendRaw(`VALUE IGNORED: 거리 범위를 벗어난 값 ${value}`);
+  if (receivingSensor === 'distance') {
+    const distance = parseFirstNumber(frame);
+    if (distance !== null && distance >= 0 && distance <= 100000) {
+      updateDistance(distance, frame, true);
+    }
     return;
   }
 
-  updateDistance(value, frame, 'serial');
+  const pressure = parseFirstNumber(frame);
+  if (pressure !== null && pressure > 0 && pressure <= 10000) {
+    updatePressure(pressure, frame, true);
+  }
 }
 
-function extractNumber(text) {
-  const matches = String(text).match(/[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?/g);
-  if (!matches || !matches.length) {
+function parseFirstNumber(raw) {
+  const match = String(raw).match(/[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?/);
+  if (!match) {
     return null;
   }
-
-  const requestedIndex = Math.trunc(numberOr(elements.numberIndex.value, 1));
-  const index = Math.max(1, Math.min(100, requestedIndex)) - 1;
-  elements.numberIndex.value = String(index + 1);
-
-  if (index >= matches.length) {
-    return null;
-  }
-
-  const sourceValue = Number(matches[index]);
-  if (!Number.isFinite(sourceValue)) {
-    return null;
-  }
-
-  const scale = numberOr(elements.parserScale.value, 1);
-  const offset = numberOr(elements.parserOffset.value, 0);
-  const value = sourceValue * scale + offset;
+  const value = Number(match[0]);
   return Number.isFinite(value) ? value : null;
+}
+
+function startReceiving() {
+  if (!port) {
+    showToast('먼저 장치에 연결하세요.', 'error');
+    return;
+  }
+
+  if (receivingSensor) {
+    return;
+  }
+
+  receivingSensor = activeTab;
+  const sensor = sensors[receivingSensor];
+  sensor.sessionStartedAt = performance.now();
+  sensor.lastRecordedAt = Number.NEGATIVE_INFINITY;
+
+  elements.sourceBadge.hidden = false;
+  elements.sourceBadge.textContent = `기록 센서: ${sensor.name}`;
+  setStatus('connected', `${sensor.name} 기록 중…`);
+  appendLog(`▶ ${sensor.name} 센서 데이터 기록을 시작합니다.`);
+  updateControls();
+  showToast(`${sensor.name} 데이터 기록을 시작했습니다.`, 'success');
+}
+
+function stopReceiving(options = {}) {
+  const { silent = false, reason = '' } = options;
+  if (!receivingSensor) {
+    elements.sourceBadge.hidden = true;
+    updateControls();
+    return;
+  }
+
+  const sensorKey = receivingSensor;
+  const sensor = sensors[sensorKey];
+  sensor.elapsedOffsetSeconds = elapsedSeconds(sensorKey);
+  sensor.sessionStartedAt = 0;
+  receivingSensor = null;
+
+  elements.sourceBadge.hidden = true;
+  setStatus(port ? 'connected' : 'idle', port ? '대기 중 (연결 유지)' : '장치 연결 전');
+  appendLog(`▶ ${sensor.name} 데이터 기록을 중지했습니다.${reason ? ` ${reason}` : ''}`);
+  updateControls();
+
+  if (!silent) {
+    showToast('기록을 중지했습니다. 포트 연결과 원시 로그 수신은 유지됩니다.');
+  }
 }
 
 async function disconnectSerial(options = {}) {
@@ -308,9 +381,11 @@ async function disconnectSerial(options = {}) {
   } = options;
 
   isDisconnecting = true;
+  stopReceiving({ silent: true });
   keepReading = false;
   clearTimeout(idleFrameTimer);
   idleFrameTimer = null;
+  updateControls();
 
   const activePort = port;
   const activeReadLoop = readLoopPromise;
@@ -320,7 +395,7 @@ async function disconnectSerial(options = {}) {
       try {
         await reader.cancel();
       } catch (_) {
-        // Cancellation can fail after a physical disconnect.
+        // Reader cancellation can fail after hardware removal.
       }
     }
 
@@ -328,7 +403,7 @@ async function disconnectSerial(options = {}) {
       try {
         await activeReadLoop;
       } catch (_) {
-        // The caller reports read failures with a clearer message.
+        // The caller reports the failure with a clearer message.
       }
     }
 
@@ -336,19 +411,19 @@ async function disconnectSerial(options = {}) {
       try {
         await activePort.close();
       } catch (_) {
-        // A physically removed port is already closed by the browser.
+        // A physically removed port is already closed.
       }
     }
   } finally {
     reader = null;
     readLoopPromise = null;
     port = null;
-    resetSerialSession();
-    setConnectionControls(false);
-    setConnectionStatus(error ? 'error' : 'idle', message);
-    stopMeasurement({ message: error ? '연결 해제로 기록 중지' : '기록 중지됨', silent: true });
-    appendRaw(error ? `--- SERIAL LOST: ${message} ---` : '--- SERIAL DISCONNECTED ---');
+    resetSerialDecoder();
+    elements.sourceBadge.hidden = true;
+    setStatus(error ? 'error' : 'idle', message);
+    appendLog(error ? `⚠ ${message}` : '▶ 장치 연결을 해제했습니다.');
     isDisconnecting = false;
+    updateControls();
 
     if (notify) {
       showToast(message, error ? 'error' : 'default');
@@ -360,153 +435,172 @@ async function handleUnexpectedDisconnect(message) {
   await disconnectSerial({ message, error: true, closePort: false });
 }
 
-function startMeasurement() {
-  if (isMeasuring) {
+function selectTab(nextTab) {
+  if (!sensors[nextTab] || nextTab === activeTab) {
     return;
   }
 
-  isMeasuring = true;
-  measurementStartedAt = performance.now();
-  lastRecordedAt = Number.NEGATIVE_INFINITY;
-  elements.startBtn.disabled = true;
-  elements.stopBtn.disabled = false;
-  elements.measurementState.textContent = port ? '실측 기록 중' : '데모 기록 중';
-  showToast(port ? '센서 데이터 기록을 시작했습니다.' : '데모 데이터 기록을 시작했습니다.', 'success');
-}
-
-function stopMeasurement(options = {}) {
-  const { message = '기록 완료', silent = false } = options;
-
-  if (isMeasuring) {
-    elapsedOffsetSeconds = currentElapsedSeconds();
+  if (receivingSensor && nextTab !== receivingSensor) {
+    stopReceiving({
+      silent: true,
+      reason: '센서 탭이 변경되어 자동으로 중지했습니다.'
+    });
+    showToast('센서 탭이 바뀌어 기록을 중지했습니다. 새 탭에서 다시 시작하세요.');
   }
 
-  isMeasuring = false;
-  measurementStartedAt = 0;
-  elements.startBtn.disabled = false;
-  elements.stopBtn.disabled = true;
-  elements.measurementState.textContent = message;
+  activeTab = nextTab;
+  document.querySelectorAll('.tab').forEach((button) => {
+    const selected = button.dataset.tab === activeTab;
+    button.classList.toggle('active', selected);
+    button.setAttribute('aria-selected', String(selected));
+  });
+  elements.distancePanel.hidden = activeTab !== 'distance';
+  elements.pressurePanel.hidden = activeTab !== 'pressure';
+  updateControls();
 
-  if (!silent) {
-    showToast('기록을 중지했습니다. 다시 시작하면 같은 시간축에서 이어집니다.');
-  }
+  requestAnimationFrame(() => {
+    drawDistanceChart();
+    drawPressureChart();
+  });
 }
 
-function shouldRecord() {
-  if (!isMeasuring) {
+function elapsedSeconds(sensorKey) {
+  const sensor = sensors[sensorKey];
+  if (receivingSensor !== sensorKey || !sensor.sessionStartedAt) {
+    return sensor.elapsedOffsetSeconds;
+  }
+  return sensor.elapsedOffsetSeconds + Math.max(0, (performance.now() - sensor.sessionStartedAt) / 1000);
+}
+
+function canRecord(sensorKey) {
+  if (receivingSensor !== sensorKey) {
     return false;
   }
 
+  const sensor = sensors[sensorKey];
   const now = performance.now();
-  const interval = Math.max(20, Math.min(60000, numberOr(elements.recordInterval.value, 100)));
+  const interval = Math.max(20, Math.min(60000, numberOr(elements.recordInterval.value, 1000)));
   elements.recordInterval.value = String(interval);
 
-  if (now - lastRecordedAt < interval) {
+  if (now - sensor.lastRecordedAt < interval) {
     return false;
   }
 
-  lastRecordedAt = now;
+  sensor.lastRecordedAt = now;
   return true;
 }
 
-function currentElapsedSeconds() {
-  if (!isMeasuring || !measurementStartedAt) {
-    return elapsedOffsetSeconds;
-  }
-  return elapsedOffsetSeconds + Math.max(0, (performance.now() - measurementStartedAt) / 1000);
-}
-
-function updateDistance(cm, raw, source) {
-  if (!Number.isFinite(cm)) {
+function updateDistance(distance, raw = '', fromSerial = false) {
+  if (!Number.isFinite(distance)) {
     return;
   }
 
-  currentDistanceCm = cm;
-  elements.distanceValue.textContent = formatDistance(cm, 1);
-  elements.distanceRawText.textContent = source === 'serial' ? `원시값: ${shorten(raw, 120)}` : '데모 입력값';
+  currentDistance = distance;
+  elements.distanceValue.textContent = formatNumber(distance, 1);
+  elements.distanceRaw.textContent = fromSerial ? `원시값: ${shorten(raw, 120)}` : '화면 테스트 값';
   refreshDistanceVisual();
 
-  if (!shouldRecord()) {
+  if (!fromSerial || !canRecord('distance')) {
     return;
   }
 
-  data.push({
+  sensors.distance.data.push({
     timestamp: Date.now(),
-    elapsedSeconds: currentElapsedSeconds(),
-    distanceCm: cm,
-    source,
+    elapsedSeconds: elapsedSeconds('distance'),
+    distance,
     raw: String(raw).slice(0, MAX_FRAME_LENGTH)
   });
+  trimData(sensors.distance.data);
+  renderDistanceTable();
+  drawDistanceChart();
+  updateControls();
+}��-�G����ƭy�ureTable();
+  drawPressureChart();
+  updateControls();
+}
 
+function refreshPressureVisual() {
+  const pressure = currentPressure || pressureBaseline;
+  const volume = calculateVolume(pressure) ?? getBaselineVolume();
+  const shown = Math.max(0, Math.min(60, volume));
+  const startX = 135;
+  const endX = 555;
+  const pistonX = startX + (shown / 60) * (endX - startX);
+
+  elements.pistonGroup.setAttribute('transform', `translate(${pistonX},0)`);
+  elements.airFill.setAttribute('width', String(Math.max(1, pistonX - startX)));
+  elements.syringeVolumeLabel.setAttribute('x', String(pistonX));
+  elements.syringeVolumeLabel.textContent = `${formatNumber(volume, 1)} mL`;
+  elements.baselineText.textContent = `P₀ = ${formatNumber(pressureBaseline, 3)} atm, V₀ = ${formatNumber(getBaselineVolume(), 1)} mL`;
+}
+
+function setPressureBaseline() {
+  if (!currentPressure || currentPressure <= 0 || currentPressureSource !== 'serial') {
+    showToast('먼저 센서에서 정상적인 공기압 값을 받아 주세요.', 'error');
+    return;
+  }
+  pressureBaseline = currentPressure;
+  recalculatePressureVolumes();
+  refreshPressureVisual();
+  showToast(`기준압력을 ${formatNumber(pressureBaseline, 3)} atm으로 설정했습니다.`, 'success');
+}
+
+function recalculatePressureVolumes() {
+  sensors.pressure.data.forEach((record) => {
+    record.volume = calculateVolume(record.pressure);
+  });
+  renderPressureTable();
+  drawPressureChart();
+}
+
+function updateBaselineVolume() {
+  getBaselineVolume();
+  recalculatePressureVolumes();
+  refreshPressureVisual();
+}
+
+function updatePressureDemo() {
+  const pressure = numberOr(elements.pressureDemo.value, 100) / 100;
+  elements.pressureDemoLabel.textContent = `${formatNumber(pressure, 2)} atm`;
+  if (!receivingSensor) {
+    updatePressure(pressure, 'DEMO', false);
+  }
+}
+
+function trimData(data) {
   if (data.length > MAX_DATA_POINTS) {
-    data.shift();
+    data.splice(0, data.length - MAX_DATA_POINTS);
   }
-
-  renderDistanceTable();
-  drawDistanceChart();
-}
-
-function refreshDistanceVisual() {
-  const maximum = Math.max(10, Math.min(10000, numberOr(elements.distanceMax.value, 200)));
-  elements.distanceMax.value = String(maximum);
-  elements.distanceScaleMaxLabel.textContent = `${formatDistance(maximum, 0)} cm`;
-
-  if (currentDistanceCm === null) {
-    return;
-  }
-
-  const clampedDistance = Math.max(0, Math.min(maximum, currentDistanceCm));
-  const startX = 145;
-  const endX = 660;
-  const sensorX = 125;
-  const wallX = startX + (clampedDistance / maximum) * (endX - startX);
-
-  elements.wallGroup.setAttribute('transform', `translate(${wallX},0)`);
-  elements.distanceLine.setAttribute('x2', String(wallX));
-  elements.distanceLabel.setAttribute('x', String((sensorX + wallX) / 2));
-  elements.distanceLabel.textContent = `${formatDistance(currentDistanceCm, 1)} cm`;
-}
-
-function resetLiveReading() {
-  currentDistanceCm = null;
-  elements.distanceValue.textContent = '--';
-  elements.distanceRawText.textContent = '원시 데이터 대기 중';
-  elements.wallGroup.setAttribute('transform', 'translate(390,0)');
-  elements.distanceLine.setAttribute('x2', '390');
-  elements.distanceLabel.setAttribute('x', '257');
-  elements.distanceLabel.textContent = '-- cm';
-}
-
-function updateDemoDistance() {
-  const value = numberOr(elements.distanceDemo.value, 100);
-  elements.distanceDemoLabel.textContent = `${formatDistance(value, 0)} cm`;
-
-  if (port) {
-    return;
-  }
-
-  updateDistance(value, `DEMO:${value}`, 'demo');
-}
-
-function clearCurrent() {
-  data.length = 0;
-  elapsedOffsetSeconds = 0;
-  lastRecordedAt = Number.NEGATIVE_INFINITY;
-
-  if (isMeasuring) {
-    measurementStartedAt = performance.now();
-    elements.measurementState.textContent = port ? '실측 기록 중' : '데모 기록 중';
-  } else {
-    elements.measurementState.textContent = '데이터 없음';
-  }
-
-  renderDistanceTable();
-  drawDistanceChart();
-  showToast('기록 데이터를 지웠습니다.');
 }
 
 function renderDistanceTable() {
-  elements.distanceTable.replaceChildren();
+  renderTable(
+    elements.distanceTable,
+    sensors.distance.data,
+    (record) => [
+      record.elapsedSeconds.toFixed(2),
+      formatNumber(record.distance, 2),
+      shorten(record.raw, 30)
+    ]
+  );
+  elements.distanceCount.textContent = `${sensors.distance.data.length}개`;
+}
+
+function renderPressureTable() {
+  renderTable(
+    elements.pressureTable,
+    sensors.pressure.data,
+    (record) => [
+      record.elapsedSeconds.toFixed(2),
+      formatNumber(record.pressure, 3),
+      record.volume === null ? '--' : formatNumber(record.volume, 1)
+    ]
+  );
+  elements.pressureCount.textContent = `${sensors.pressure.data.length}개`;
+}
+
+function renderTable(tableBody, data, makeCells) {
+  tableBody.replaceChildren();
 
   if (!data.length) {
     const row = document.createElement('tr');
@@ -515,37 +609,48 @@ function renderDistanceTable() {
     cell.colSpan = 3;
     cell.textContent = '아직 기록된 값이 없습니다.';
     row.appendChild(cell);
-    elements.distanceTable.appendChild(row);
-  } else {
-    const fragment = document.createDocumentFragment();
-    const rows = data.slice(-20).reverse();
-
-    for (const record of rows) {
-      const row = document.createElement('tr');
-      const timeCell = document.createElement('td');
-      const distanceCell = document.createElement('td');
-      const rawCell = document.createElement('td');
-
-      timeCell.textContent = record.elapsedSeconds.toFixed(2);
-      distanceCell.textContent = formatDistance(record.distanceCm, 2);
-      rawCell.textContent = shorten(record.raw, 28);
-      rawCell.title = record.raw;
-
-      row.append(timeCell, distanceCell, rawCell);
-      fragment.appendChild(row);
-    }
-
-    elements.distanceTable.appendChild(fragment);
+    tableBody.appendChild(row);
+    return;
   }
 
-  elements.distanceCount.textContent = `${data.length}개`;
-  elements.downloadBtn.disabled = !data.length;
+  const fragment = document.createDocumentFragment();
+  for (const record of data.slice(-20).reverse()) {
+    const row = document.createElement('tr');
+    makeCells(record).forEach((value) => {
+      const cell = document.createElement('td');
+      cell.textContent = value;
+      row.appendChild(cell);
+    });
+    fragment.appendChild(row);
+  }
+  tableBody.appendChild(fragment);
 }
 
 function drawDistanceChart() {
-  const canvas = elements.distanceChart;
-  const width = Math.max(280, canvas.clientWidth || 700);
-  const height = Math.max(220, canvas.clientHeight || 280);
+  drawChart(
+    elements.distanceChart,
+    sensors.distance.data.map((record) => ({ x: record.elapsedSeconds, y: record.distance })),
+    '시간 (s)',
+    '거리 (cm)'
+  );
+}
+
+function drawPressureChart() {
+  drawChart(
+    elements.pressureChart,
+    sensors.pressure.data.map((record) => ({ x: record.elapsedSeconds, y: record.pressure })),
+    '시간 (s)',
+    '압력 (atm)'
+  );
+}
+
+function drawChart(canvas, points, xLabel, yLabel) {
+  if (!canvas || canvas.clientWidth === 0) {
+    return;
+  }
+
+  const width = Math.max(280, canvas.clientWidth);
+  const height = Math.max(220, canvas.clientHeight);
   const ratio = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
   const pixelWidth = Math.round(width * ratio);
   const pixelHeight = Math.round(height * ratio);
@@ -557,32 +662,28 @@ function drawDistanceChart() {
 
   const context = canvas.getContext('2d');
   context.setTransform(ratio, 0, 0, ratio, 0, 0);
-  drawLineChart(context, width, height, data.map((record) => ({
-    x: record.elapsedSeconds,
-    y: record.distanceCm
-  })));
+  drawLineChart(context, width, height, samplePoints(points, 600), xLabel, yLabel);
 }
 
-function drawLineChart(context, width, height, points) {
-  const padding = { left: 58, right: 18, top: 18, bottom: 44 };
+function drawLineChart(context, width, height, points, xLabel, yLabel) {
+  const padding = { left: 62, right: 18, top: 18, bottom: 44 };
   context.clearRect(0, 0, width, height);
   context.fillStyle = '#ffffff';
   context.fillRect(0, 0, width, height);
 
-  const plotted = samplePoints(points, 600);
   let xMin = 0;
   let xMax = 10;
   let yMin = 0;
   let yMax = 1;
 
-  if (plotted.length) {
-    xMin = plotted[0].x;
-    xMax = plotted[plotted.length - 1].x;
+  if (points.length) {
+    xMin = points[0].x;
+    xMax = points[points.length - 1].x;
     if (xMax <= xMin) {
       xMax = xMin + 1;
     }
 
-    const values = plotted.map((point) => point.y).filter(Number.isFinite);
+    const values = points.map((point) => point.y).filter(Number.isFinite);
     if (values.length) {
       yMin = Math.min(...values);
       yMax = Math.max(...values);
@@ -590,7 +691,7 @@ function drawLineChart(context, width, height, points) {
         yMin = Math.max(0, yMin - 1);
         yMax += 1;
       }
-      const margin = Math.max(0.5, (yMax - yMin) * 0.12);
+      const margin = Math.max(0.001, (yMax - yMin) * 0.1);
       yMin = Math.max(0, yMin - margin);
       yMax += margin;
     }
@@ -601,7 +702,7 @@ function drawLineChart(context, width, height, points) {
   const projectX = (value) => padding.left + ((value - xMin) / (xMax - xMin)) * plotWidth;
   const projectY = (value) => height - padding.bottom - ((value - yMin) / (yMax - yMin)) * plotHeight;
 
-  context.strokeStyle = '#e6ebf2';
+  context.strokeStyle = '#e8edf4';
   context.lineWidth = 1;
   context.font = '11px Segoe UI, Arial, sans-serif';
   context.fillStyle = '#6b7788';
@@ -613,7 +714,7 @@ function drawLineChart(context, width, height, points) {
     context.lineTo(width - padding.right, y);
     context.stroke();
     context.textAlign = 'right';
-    context.fillText((yMax - (index * (yMax - yMin)) / 5).toFixed(1), padding.left - 7, y + 4);
+    context.fillText((yMax - (index * (yMax - yMin)) / 5).toFixed(2), padding.left - 7, y + 4);
   }
 
   for (let index = 0; index <= 5; index += 1) {
@@ -629,41 +730,38 @@ function drawLineChart(context, width, height, points) {
   context.fillStyle = '#475467';
   context.font = '700 12px Segoe UI, Arial, sans-serif';
   context.textAlign = 'center';
-  context.fillText('시간 (s)', (padding.left + width - padding.right) / 2, height - 8);
+  context.fillText(xLabel, (padding.left + width - padding.right) / 2, height - 8);
   context.save();
-  context.translate(15, (padding.top + height - padding.bottom) / 2);
+  context.translate(16, (padding.top + height - padding.bottom) / 2);
   context.rotate(-Math.PI / 2);
-  context.fillText('거리 (cm)', 0, 0);
+  context.fillText(yLabel, 0, 0);
   context.restore();
 
-  if (!plotted.length) {
+  if (!points.length) {
     context.fillStyle = '#98a2b3';
     context.font = '14px Segoe UI, Arial, sans-serif';
     context.fillText('기록을 시작하면 그래프가 표시됩니다.', width / 2, height / 2);
     return;
   }
 
-  context.strokeStyle = '#3658d4';
+  context.strokeStyle = '#4263eb';
   context.lineWidth = 3;
   context.lineJoin = 'round';
   context.lineCap = 'round';
   context.beginPath();
-
-  plotted.forEach((point, index) => {
-    const x = projectX(point.x);
-    const y = projectY(point.y);
+  points.forEach((point, index) => {
     if (index === 0) {
-      context.moveTo(x, y);
+      context.moveTo(projectX(point.x), projectY(point.y));
     } else {
-      context.lineTo(x, y);
+      context.lineTo(projectX(point.x), projectY(point.y));
     }
   });
   context.stroke();
 
-  if (plotted.length === 1) {
-    context.fillStyle = '#3658d4';
+  if (points.length === 1) {
+    context.fillStyle = '#4263eb';
     context.beginPath();
-    context.arc(projectX(plotted[0].x), projectY(plotted[0].y), 4, 0, Math.PI * 2);
+    context.arc(projectX(points[0].x), projectY(points[0].y), 4, 0, Math.PI * 2);
     context.fill();
   }
 }
@@ -672,7 +770,6 @@ function samplePoints(points, limit) {
   if (points.length <= limit) {
     return points;
   }
-
   const step = Math.ceil(points.length / limit);
   const sampled = points.filter((_, index) => index % step === 0);
   const finalPoint = points[points.length - 1];
@@ -682,29 +779,64 @@ function samplePoints(points, limit) {
   return sampled;
 }
 
+function clearData() {
+  Object.values(sensors).forEach((sensor) => {
+    sensor.data.length = 0;
+    sensor.elapsedOffsetSeconds = 0;
+    sensor.lastRecordedAt = Number.NEGATIVE_INFINITY;
+    if (sensor.sessionStartedAt) {
+      sensor.sessionStartedAt = performance.now();
+    }
+  });
+  renderDistanceTable();
+  renderPressureTable();
+  drawDistanceChart();
+  drawPressureChart();
+  updateControls();
+  showToast('두 실험의 기록 데이터를 지웠습니다.');
+}
+
 function downloadCsv() {
+  const data = sensors[activeTab].data;
   if (!data.length) {
-    showToast('저장할 데이터가 없습니다.', 'error');
+    showToast('현재 탭에 저장된 데이터가 없습니다.', 'error');
     return;
   }
 
-  const rows = [
-    ['timestamp_iso', 'time_s', 'distance_cm', 'source', 'raw'],
-    ...data.map((record) => [
-      new Date(record.timestamp).toISOString(),
-      record.elapsedSeconds.toFixed(3),
-      record.distanceCm,
-      record.source,
-      protectSpreadsheetCell(record.raw)
-    ])
-  ];
+  let rows;
+  let fileName;
+
+  if (activeTab === 'distance') {
+    rows = [
+      ['timestamp_iso', 'time_s', 'distance_cm', 'raw'],
+      ...data.map((record) => [
+        new Date(record.timestamp).toISOString(),
+        record.elapsedSeconds.toFixed(3),
+        record.distance,
+        protectSpreadsheetCell(record.raw)
+      ])
+    ];
+    fileName = `EZMaker_ultrasonic_${localDateStamp()}.csv`;
+  } else {
+    rows = [
+      ['timestamp_iso', 'time_s', 'pressure_atm', 'volume_mL', 'raw'],
+      ...data.map((record) => [
+        new Date(record.timestamp).toISOString(),
+        record.elapsedSeconds.toFixed(3),
+        record.pressure,
+        record.volume ?? '',
+        protectSpreadsheetCell(record.raw)
+      ])
+    ];
+    fileName = `EZMaker_pressure_${localDateStamp()}.csv`;
+  }
+
   const csv = rows.map((row) => row.map(csvCell).join(',')).join('\r\n');
   const blob = new Blob([`\ufeff${csv}`], { type: 'text/csv;charset=utf-8' });
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
-
   link.href = url;
-  link.download = `EZMaker_distance_${localDateStamp()}.csv`;
+  link.download = fileName;
   document.body.appendChild(link);
   link.click();
   link.remove();
@@ -721,10 +853,9 @@ function protectSpreadsheetCell(value) {
   return /^\s*[=+\-@]/.test(text) ? `'${text}` : text;
 }
 
-function appendRaw(text) {
+function appendLog(text) {
   const time = new Date().toLocaleTimeString('ko-KR', { hour12: false });
-  const lines = String(text).split('\n');
-  lines.forEach((line, index) => {
+  String(text).split('\n').forEach((line, index) => {
     rawLines.push(index === 0 ? `[${time}] ${line}` : `           ${line}`);
   });
 
@@ -770,7 +901,7 @@ function shorten(value, length) {
   return text.length > length ? `${text.slice(0, length - 1)}…` : text;
 }
 
-function formatDistance(value, digits) {
+function formatNumber(value, digits) {
   return Number(value).toLocaleString('ko-KR', {
     minimumFractionDigits: digits,
     maximumFractionDigits: digits
@@ -783,10 +914,11 @@ function toHex(value) {
 
 function localDateStamp() {
   const now = new Date();
-  const year = now.getFullYear();
-  const month = String(now.getMonth() + 1).padStart(2, '0');
-  const day = String(now.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
+  return [
+    now.getFullYear(),
+    String(now.getMonth() + 1).padStart(2, '0'),
+    String(now.getDate()).padStart(2, '0')
+  ].join('-');
 }
 
 function errorMessage(error) {
@@ -807,16 +939,25 @@ function friendlyConnectionError(error) {
 }
 
 function bindEvents() {
-  elements.connectBtn.addEventListener('click', () => void connectSerial());
-  elements.disconnectBtn.addEventListener('click', () => void disconnectSerial());
-  elements.startBtn.addEventListener('click', startMeasurement);
-  elements.stopBtn.addEventListener('click', () => stopMeasurement());
-  elements.clearBtn.addEventListener('click', clearCurrent);
-  elements.clearLogBtn.addEventListener('click', clearRawLog);
-  elements.downloadBtn.addEventListener('click', downloadCsv);
+  elements.btnConnect.addEventListener('click', () => void connectSerial());
+  elements.btnDisconnect.addEventListener('click', () => void disconnectSerial());
+  elements.btnStart.addEventListener('click', startReceiving);
+  elements.btnStop.addEventListener('click', () => stopReceiving());
+  elements.btnClear.addEventListener('click', clearData);
+  elements.btnCsv.addEventListener('click', downloadCsv);
+  elements.btnBaseline.addEventListener('click', setPressureBaseline);
+  elements.btnClearLog.addEventListener('click', clearRawLog);
   elements.distanceMax.addEventListener('input', refreshDistanceVisual);
-  elements.distanceDemo.addEventListener('input', updateDemoDistance);
-  window.addEventListener('resize', drawDistanceChart, { passive: true });
+  elements.distanceDemo.addEventListener('input', updateDistanceDemo);
+  elements.v0Input.addEventListener('input', updateBaselineVolume);
+  elements.pressureDemo.addEventListener('input', updatePressureDemo);
+  document.querySelectorAll('.tab').forEach((button) => {
+    button.addEventListener('click', () => selectTab(button.dataset.tab));
+  });
+  window.addEventListener('resize', () => {
+    drawDistanceChart();
+    drawPressureChart();
+  }, { passive: true });
 
   if ('serial' in navigator) {
     navigator.serial.addEventListener('disconnect', (event) => {
@@ -842,15 +983,21 @@ function bindEvents() {
 
 function initialize() {
   bindEvents();
-  updateEnvironmentNotice();
-  setConnectionControls(false);
+  updateDistanceDemo();
+  updatePressureDemo();
   renderDistanceTable();
-  refreshDistanceVisual();
+  renderPressureTable();
+  updateEnvironmentNotice();
+  updateControls();
   drawDistanceChart();
 
   if ('ResizeObserver' in window) {
-    const chartObserver = new ResizeObserver(() => drawDistanceChart());
+    const chartObserver = new ResizeObserver(() => {
+      drawDistanceChart();
+      drawPressureChart();
+    });
     chartObserver.observe(elements.distanceChart);
+    chartObserver.observe(elements.pressureChart);
   }
 }
 
